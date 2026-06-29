@@ -9,7 +9,6 @@ class Attention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
-        self.layer_norm = nn.LayerNorm(in_channels)
         self.qkv = nn.Linear(in_channels, 3 * num_heads * head_dim)
         self.w_out = nn.Linear(num_heads * head_dim, in_channels)
         
@@ -19,7 +18,6 @@ class Attention(nn.Module):
     
     def forward(self, x, mask, temperature, cache_key="cond"):
         B, T, _ = x.shape
-        x = self.layer_norm(x.float()).type(x.dtype)
         qkv = self.qkv(x).reshape(B, T, 3 * self.num_heads, self.head_dim).transpose(1, 2)  # (B, 3H, T, D)
         q, k, v = qkv.chunk(3, dim=1)   # (B, H, T, D)
         
@@ -48,13 +46,11 @@ class Attention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, in_channels, expansion):
         super().__init__()
-        self.layer_norm = nn.LayerNorm(in_channels)
         self.w_in = nn.Linear(in_channels, in_channels * expansion)
         self.activation = nn.GELU()
         self.w_out = nn.Linear(in_channels * expansion, in_channels)
         
     def forward(self, x):
-        x = self.layer_norm(x.float()).type(x.dtype)
         x = self.w_in(x)
         x = self.activation(x)
         return self.w_out(x)
@@ -63,11 +59,16 @@ class FeedForward(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, in_channels, attn_num_heads, attn_head_dim, ffn_expansion=4):
         super().__init__()
+        self.layer_norm1 = nn.LayerNorm(in_channels, elementwise_affine=False)
         self.attention = Attention(in_channels, attn_num_heads, attn_head_dim)
+        self.layer_norm2 = nn.LayerNorm(in_channels, elementwise_affine=False)
         self.ffn = FeedForward(in_channels, ffn_expansion)
         
     def forward(self, x, attn_mask, attn_temp, cache_key):
-        # Residual Connections
-        x = x + self.attention(x, attn_mask, attn_temp, cache_key)
-        x = x + self.ffn(x)
+        norm1_x = self.layer_norm1(x.float()).type(x.dtype)
+        x = x + self.attention(norm1_x, attn_mask, attn_temp, cache_key)  # Residual Connections
+        
+        norm2_x = self.layer_norm2(x.float()).type(x.dtype)
+        x = x + self.ffn(norm2_x)     # Residual Connections
+        
         return x

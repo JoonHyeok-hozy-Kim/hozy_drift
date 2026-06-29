@@ -1,1 +1,11 @@
+.vscode/
+.env
+logs/
+results/
+scripts/a100_gpu/
 venv/
+weights/train_weights_wip/
+wandb_logs/
+*/__pycache__/
+
+hozy_ignorance.md
