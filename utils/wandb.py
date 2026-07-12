@@ -23,3 +23,13 @@ def get_wandb_run_info(run_url):
     run_id = elements[4].split("?")[0]
     
     return user_name, project_name, run_id    
+
+def find_project_run_dirctory(input_dir, run_id, pos_idx=2, separator="-"):    
+    for root, dirs, _ in os.walk(input_dir):
+        for d in dirs:
+            parts = d.split(separator)
+            if len(parts) >= pos_idx+1 and parts[pos_idx] == run_id:
+                full_path = os.path.join(root, d)
+                return full_path
+                
+    return None

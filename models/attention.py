@@ -17,7 +17,7 @@ class Attention(nn.Module):
         self.v_cache = None
     
     def forward(self, x, mask, temperature, cache_key="cond"):
-        B, T, _ = x.shape
+        B, T = x.shape[0], x.shape[1]
         qkv = self.qkv(x).reshape(B, T, 3 * self.num_heads, self.head_dim).transpose(1, 2)  # (B, 3H, T, D)
         q, k, v = qkv.chunk(3, dim=1)   # (B, H, T, D)
         

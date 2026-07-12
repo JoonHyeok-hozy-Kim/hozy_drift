@@ -11,7 +11,7 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-FILE_NAME="two_dimensional.py"
+FILE_NAME="drifting_tarflow_two_dimensional_learnable_ratio_reg.py"
 OUT_DIR="./logs/${FILE_NAME}"
 mkdir -p "${OUT_DIR}"
 
@@ -57,19 +57,35 @@ echo "==================================="
 dataset_name=spiral
 img_size=8
 channel_size=1
-num_push_forward_blocks=8
-hidden_dim=512
-attn_num_heads=8
+
+num_flow_blocks=4
+num_attn_blocks=4
+
+flow_block_dim=16
+attn_num_heads=4
+attn_head_dim=4
+
+permutation_type=flip
 attn_temp=1.0
 ffn_expansion=4
 # cfg_weight=0.0
+
+init_vp_vq_ratio=0.5
+reg_lambda=0.01
+
 batch_size=1024
-epochs=20000
+epochs=30000
 lr=1e-4
-lr_schedule_type=wsd
-sample_freq=1000
+
+lr_schedule_type=ws
+# lr_schedule_type=s
+
+sample_freq=100
 # num_samples=3000
+
 resume_wandb_url=false
+# resume_wandb_url=https://wandb.ai/hozy-university-of-pennsylvania/DriftingNF-drifting_tarflow_two_dimensional_ratio_reg_loss-spiral/runs/jc0iieav/overview?nw=nwuserdanielisdan
+
 # annealed_guidance_flag=""
 
 
@@ -78,10 +94,16 @@ python -u train/${FILE_NAME} \
     --dataset_name "$dataset_name" \
     --img_size "$img_size" \
     --channel_size "$channel_size" \
-    --num_push_forward_blocks "$num_push_forward_blocks" \
+    --num_flow_blocks "$num_flow_blocks" \
+    --flow_block_dim "$flow_block_dim" \
+    --num_attn_blocks "$num_attn_blocks" \
+    --permutation_type "$permutation_type" \
     --attn_num_heads "$attn_num_heads" \
+    --attn_head_dim "$attn_head_dim" \
     --attn_temp "$attn_temp" \
     --ffn_expansion "$ffn_expansion" \
+    --init_vp_vq_ratio "$init_vp_vq_ratio" \
+    --reg_lambda "$reg_lambda" \
     --batch_size "$batch_size" \
     --epochs "$epochs" \
     --lr "$lr" \

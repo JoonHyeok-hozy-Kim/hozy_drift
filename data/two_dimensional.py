@@ -83,9 +83,45 @@ def save_2d_dataset_image(data, img_size=8, save_dir=None, file_name=None):
         
     plt.savefig(file_path)
     plt.close()
+    
 
+def save_2d_arrow_diagram(pos_samples, gen_samples, v_p, v_q, epoch, save_dir=None, file_name=None):
+    plt.figure(figsize=(10, 10))
+    
+    plt.scatter(pos_samples[:, 0], pos_samples[:, 1], c='gray', alpha=0.3, s=10, label='Target Data (p)')
+    plt.scatter(gen_samples[:, 0], gen_samples[:, 1], c='black', s=20, label='Generated Samples (q)')
+    
+    plt.quiver(gen_samples[:, 0], gen_samples[:, 1], v_p[:, 0], v_p[:, 1], 
+                color='blue', alpha=0.3, angles='xy', scale_units='xy', scale=1.0, 
+                width=0.002, label='$V_p$ (Pull to Target)')
 
+    plt.quiver(gen_samples[:, 0], gen_samples[:, 1], -v_q[:, 0], -v_q[:, 1], 
+                color='red', alpha=0.3, angles='xy', scale_units='xy', scale=1.0, 
+                width=0.002, label='$-V_q$ (Score/Push away)')
 
+    plt.title(f'Vector Fields at Epoch {epoch+1}', fontsize=16)
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.legend(loc='upper right')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.axis('equal') 
+    
+    if save_dir is None:
+        img_dir = os.path.join("results", "dataset")
+        img_dir = os.path.join(img_dir, "get_spiral_dataset")
+        os.makedirs(img_dir, exist_ok=True)
+    else:
+        assert os.path.exists(save_dir), f"save_dir(={save_dir}) does not exists."
+        img_dir = save_dir
+    
+    if file_name is None:
+        now_str = datetime.now().strftime("%y%m%d_%H%M")
+        file_path = os.path.join(img_dir, f"two_dimensional-{now_str}.png")
+    else:
+        file_path = os.path.join(img_dir, f"{file_name}.png")
+        
+    plt.savefig(file_path)
+    plt.close()
 
 if __name__ == '__main__':
     n_points = 3000

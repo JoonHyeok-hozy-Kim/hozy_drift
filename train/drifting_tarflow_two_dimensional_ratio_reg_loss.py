@@ -7,16 +7,18 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
+from torch.nn.attention import sdpa_kernel, SDPBackend
 import torchvision.utils as tvu
 
+from models.tarflow import TarFlowRaw
 from models.push_forward import DriftModelRaw
 from models.memory_bank import TorchMemoryBank
-from models.drift_loss import DriftLossFunction
+from models.drift_loss import NFDriftLossFunction_Ratio_Regularize
 from utils.seed import seed_everything
 from utils.fid import *
-from utils.wandb import get_best_checkpoint, get_wandb_run_info
+from utils.wandb import get_best_checkpoint, get_wandb_run_info, find_project_run_dirctory
 from utils.lr import get_lr_schedule, set_lr
-from data.two_dimensional import get_2d_dataset, save_2d_dataset_image
+from data.two_dimensional import get_2d_dataset, save_2d_dataset_image, save_2d_arrow_diagram
 
 
 RANDOM_SEED = 46
@@ -32,23 +34,26 @@ if __name__ == '__main__':
     parser.add_argument('--img_size', default=8, type=int, help="Output image size")
     parser.add_argument('--channel_size', default=1, type=int, help="Channel size")
     
-    parser.add_argument('--num_push_forward_blocks', default=8, type=int, help="Number of FlowBlocks")
-    # parser.add_argument('--flow_block_dim', default=1024, type=int, help="Internal dim of FlowBlocks")
-    # parser.add_argument('--permutation_type', default="flip", choices=["flip", "shuffle"], help="Type of permutation for the NF")
-    # parser.add_argument('--num_attn_blocks', default=8, type=int, help="Number of Attention blocks per FlowBlocks")
-    parser.add_argument('--hidden_dim', default=512, type=int, help="Hidden dimension of the entire model")
+    # parser.add_argument('--num_push_forward_blocks', default=8, type=int, help="Number of FlowBlocks")
+    parser.add_argument('--num_flow_blocks', default=8, type=int, help="Number of FlowBlocks")
+    parser.add_argument('--flow_block_dim', default=1024, type=int, help="Internal dim of FlowBlocks")
+    parser.add_argument('--permutation_type', default="flip", choices=["flip", "shuffle"], help="Type of permutation for the NF")
+    parser.add_argument('--num_attn_blocks', default=8, type=int, help="Number of Attention blocks per FlowBlocks")
+    # parser.add_argument('--hidden_dim', default=512, type=int, help="Hidden dimension of the entire model")
     parser.add_argument('--attn_num_heads', default=64, type=int, help="Head dim of Attention blocks")
-    # parser.add_argument('--attn_head_dim', default=64, type=int, help="Head dim of Attention blocks")
+    parser.add_argument('--attn_head_dim', default=64, type=int, help="Head dim of Attention blocks")
     parser.add_argument('--attn_temp', default=1.0, type=float, help='Attention temperature')
     parser.add_argument('--ffn_expansion', default=4, type=int, help="Internal dim multiplier for FFN layer")
-    # parser.add_argument('--cfg_weight', default=0.0, type=float, help='Guidance weight for sampling, 0 is no guidance')
-    # parser.add_argument("--annealed_guidance", action="store_true", help="Apply the annealed guidance")
-    
+    parser.add_argument('--cfg_weight', default=0.0, type=float, help='Guidance weight for sampling, 0 is no guidance')
+    parser.add_argument("--annealed_guidance", action="store_true", help="Apply the annealed guidance")
+    parser.add_argument('--vp_vq_ratio', default=1.0, type=float, help='Ratio V_p/V_q')
+    parser.add_argument('--reg_lambda', default=0.01, type=float, help='Parameter for the Regularization loss on V_q')
+
     parser.add_argument('--batch_size', default=128, type=int, help='Training batch size across all devices')
     # parser.add_argument('--positive_sample_ratio', default=0.5, type=float, help='pos/(pos+neg) sample ratio')
     parser.add_argument('--epochs', default=100, type=int, help='Training epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Maximum learning rate')
-    parser.add_argument('--lr_schedule_type', default='wsd', type=str, choices=["wsd", "wd", "d", "cos"], help='Learning rate schedule')
+    parser.add_argument('--lr_schedule_type', default='wsd', type=str, choices=["wsd", "ws", "d", "cos", "s"], help='Learning rate schedule')
     # parser.add_argument('--class_dropout_prob', default=0, type=float, help='Ratio for random label drop in conditional mode')
     parser.add_argument('--sample_freq', default=1, type=int, help='Frequency of sampling in terms of epochs')
     # parser.add_argument('--num_samples', default=4096, type=int, help='Number of sampels to draw')
@@ -62,15 +67,23 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # assert args.num_samples >= args.sample_batch_size, f"args.num_samples={args.num_samples} less than args.sample_batch_size(={args.sample_batch_size})."
     
-    file_name = os.path.basename(__file__).split(".")[0]   
+    file_name = os.path.basename(__file__).split(".")[0]
     now_str = dt.now().strftime("%y%m%d_%H%M")    
     exp_config_dict = {}
     print(f'{" Config ":-^80}')
     for k, v in sorted(vars(args).items()):
         exp_config_dict[k] = v
-        print(f'{k:32s}: {v}')
+        print(f'{k:32s}: {v}')    
+        
     
-    wandb_exp_name = f"DriftModel-train-{file_name}-{args.dataset_name}"
+    settings_str = ""
+    settings_str += f"vp_vq_ratio_{args.vp_vq_ratio}-reg_lambda_{args.reg_lambda}"
+    settings_str += f"-n_flowblck_{args.num_flow_blocks}-n_attnblck_{args.num_attn_blocks}"
+    settings_str += f"-n_attnheads_{args.attn_num_heads}-attnhead_dim_{args.attn_head_dim}"
+    settings_str += f"-batch_sz_{args.batch_size}"
+        
+    wandb_exp_name = f"DriftingNF-{file_name}-{args.dataset_name}"
+    wandb_run_name = settings_str
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_everything(RANDOM_SEED)
@@ -79,13 +92,31 @@ if __name__ == '__main__':
     num_classes = 1     # Spiral and Uniform
     num_patches = 2
     
-    model = DriftModelRaw(
-        in_channels=args.channel_size,
-        num_patches=num_patches,
-        num_blocks=args.num_push_forward_blocks,
-        hidden_dim=args.hidden_dim,
-        attn_num_heads=args.attn_num_heads,
-        ffn_expansion=args.ffn_expansion,
+    # model = DriftModelRaw(
+    #     in_channels=args.channel_size,
+    #     num_patches=num_patches,
+    #     num_blocks=args.num_push_forward_blocks,
+    #     hidden_dim=args.hidden_dim,
+    #     attn_num_heads=args.attn_num_heads,
+    #     ffn_expansion=args.ffn_expansion,
+    # ).to(device)    
+    
+    # Detect autograd anomaly
+    torch.autograd.set_detect_anomaly(True)
+    
+    model = TarFlowRaw(
+        in_channels = args.channel_size,
+        num_patches = num_patches,     # 2-dimensional
+        num_flow_blocks = args.num_flow_blocks,
+        flow_block_dim = args.flow_block_dim,
+        attn_num_heads = args.attn_num_heads,
+        num_attn_blocks = args.num_attn_blocks,
+        permutation_type = args.permutation_type,
+        attn_head_dim = args.attn_head_dim,
+        # attn_temp= args.attn_temp,
+        ffn_expansion = args.ffn_expansion,
+        num_classes = num_classes,
+        # class_dropout_prob=args.class_dropout_prob,
     ).to(device)
     
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -93,7 +124,7 @@ if __name__ == '__main__':
     # print(f"Layer Norm: {args.use_layer_norm}, RoPE 2D : {args.use_rope_2d}")
     
     # Drift Loss Implemented as an independent class
-    drift_loss_model = DriftLossFunction()
+    nf_drift_loss_model = NFDriftLossFunction_Ratio_Regularize(reg_lambda=args.reg_lambda)
     
     optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.95), lr=args.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler()
@@ -118,8 +149,8 @@ if __name__ == '__main__':
     base_results_dir = os.path.join(base_results_dir, args.dataset_name)
     
     if args.dry_run:
-        base_weights_dir = os.path.join(base_weights_dir, f"dry_run-{now_str}")
-        base_results_dir = os.path.join(base_results_dir, f"dry_run-{now_str}")
+        base_weights_dir = os.path.join(base_weights_dir, f"dry_run-{now_str}-{settings_str}")
+        base_results_dir = os.path.join(base_results_dir, f"dry_run-{now_str}-{settings_str}")
             
     else:
         if args.resume_wandb_url and args.resume_wandb_url.lower() != "false":  # In case of bash passing false
@@ -130,9 +161,15 @@ if __name__ == '__main__':
                 id=run_id,
                 resume="must",
             )
-                
-            base_weights_dir = os.path.join(base_weights_dir, f"wandb-{now_str}-{run_id}")
-            base_results_dir = os.path.join(base_results_dir, f"wandb-{now_str}-{run_id}")
+            
+            print(f"user_name, project_name, run_id : {user_name}, {project_name}, {run_id}")
+            base_weights_dir = find_project_run_dirctory(base_weights_dir, run_id, 2)
+            base_results_dir = find_project_run_dirctory(base_results_dir, run_id, 2)
+            print(f"found base_weights_dir : {base_weights_dir}")
+            print(f"found base_results_dir : {base_results_dir}")
+            
+            # base_weights_dir = os.path.join(base_weights_dir, f"wandb-{now_str}-{run_id}-{settings_str}")
+            # base_results_dir = os.path.join(base_results_dir, f"wandb-{now_str}-{run_id}-{settings_str}")
                 
             print(f"Resume training.")
             
@@ -165,14 +202,14 @@ if __name__ == '__main__':
             
             wandb.init(
                 project=wandb_exp_name, 
-                name=f"{file_name}",
+                name=wandb_run_name,
                 id=run_id,
                 resume="allow",
                 config = exp_config_dict,
             )
                 
-            base_weights_dir = os.path.join(base_weights_dir, f"wandb-{now_str}-{run_id}")
-            base_results_dir = os.path.join(base_results_dir, f"wandb-{now_str}-{run_id}")
+            base_weights_dir = os.path.join(base_weights_dir, f"wandb-{now_str}-{run_id}-{settings_str}")
+            base_results_dir = os.path.join(base_results_dir, f"wandb-{now_str}-{run_id}-{settings_str}")
     
     # Directory settings based on wandb run_id
     weights_dir = os.path.join(base_weights_dir, f"lr_schedule_type_{args.lr_schedule_type}")
@@ -188,7 +225,7 @@ if __name__ == '__main__':
     fixed_noise_eval = torch.randn((args.batch_size, num_patches, 1), device=device)
     fixed_y = None
     # fixed_y = torch.randint(num_classes, (args.num_samples,))
-        
+
     # fid = FID(reset_real_features=False, normalize=True).to(device)
     # fid_stat_dir = get_fid_stats_dir(args.dataset_name, args.img_size)
     # if os.path.exists(fid_stat_dir):
@@ -227,40 +264,8 @@ if __name__ == '__main__':
         # negative_labels = torch.cat([spiral_labels, uniform_labels], dim=0)
         # memory_bank_negative.add(negative_samples, negative_labels)
         
-        if (epoch + 1) % args.sample_freq == 0:
-            save_2d_dataset_image(spiral_samples, args.img_size, results_dir, f"training_data-epoch_{epoch+1}")
-            # save_2d_dataset_image(
-            #     {"spiral": spiral_samples, "uniform": uniform_samples}, 
-            #     args.img_size, results_dir, f"training_data-epoch_{epoch+1}"
-            # )
-        
-        # if epoch == 0:
-        #     debug_data_dict = {}
-        # for label_idx in range(num_classes):
-        #     n_i = label_cnts[label_idx].item()
-        #     if n_i > 0:
-        #         if label_idx == 0:
-        #             curr_data = get_2d_dataset(n_points=n_i, dataset_name=args.dataset_name)
-        #             curr_label = torch.zeros((n_i, ), dtype=torch.long)
-        #             debug_data_dict[args.dataset_name] = curr_data
-        #         else:
-        #             curr_data = get_2d_dataset(n_points=n_i, dataset_name="uniform")
-        #             curr_label = torch.ones((n_i, ), dtype=torch.long)
-        #             debug_data_dict["uniform"] = curr_data
-
-        #         memory_bank_positive.add(curr_data, curr_label)
-        #         memory_bank_negative.add(curr_data, curr_label * 0)
-        # if epoch == 0:
-        #     save_2d_dataset_image(debug_data_dict, args.img_size, results_dir, f"training_data-epoch_{epoch+1}")
-        
-        # # Sample directly
-        # pos_samples = get_2d_dataset(n_points=args.batch_size*pos_per_sample, dataset_name=args.dataset_name)
-        # neg_samples = get_2d_dataset(n_points=args.batch_size*neg_per_sample, dataset_name="uniform")
-        # if epoch == 0:
-        #     save_2d_dataset_image(
-        #         {"spiral": pos_samples, "uniform": neg_samples},
-        #         args.img_size, results_dir, f"training_data-epoch_{epoch+1}"
-        #     )
+        # if epoch == start_epoch:
+        #     save_2d_dataset_image(spiral_samples, args.img_size, results_dir, f"training_data-epoch_{epoch+1}")
         
         # train mode
         model.train()
@@ -271,21 +276,42 @@ if __name__ == '__main__':
         # neg_samples = memory_bank_negative.sample(labels_for_sample*0, num_samples=neg_per_sample)  # (B, N_neg, ...)
         
         # Stop grad
-        pos_samples = pos_samples.reshape(args.batch_size, pos_per_sample, -1).detach().to(device)
+        pos_samples = pos_samples.reshape(args.batch_size, pos_per_sample, -1).to(device)
         # neg_samples = neg_samples.reshape(args.batch_size, neg_per_sample, -1).detach().to(device)
-        neg_samples = None
+        # neg_samples = None
         
-        train_noise = torch.randn((args.batch_size, num_patches, 1), device=device)
-        train_noise_gen_rep = train_noise.repeat_interleave(gen_per_label, dim=0)   # (B*N_gen, ...)
-        generated_samples = model(train_noise_gen_rep)                              # (B*N_gen, T, ...)
-        generated_samples = generated_samples.reshape(args.batch_size, gen_per_label, -1)
+        # Changed logic of sampling everything at once
+        train_noise = torch.randn((args.batch_size * gen_per_label, num_patches, 1), device=device)
+        x_gen = model.reverse(train_noise, y=None)
         
+        x_gen_detached = x_gen.detach().requires_grad_(True)
+        
+        with sdpa_kernel([SDPBackend.MATH]):        
+            z, outputs, log_dets = model(x_gen_detached, y=None)
+            nf_loss = 0.5 * z.pow(2).mean(dim=(-1, -2)) - log_dets      # (B*N_gen, )
+            log_likelihood = -nf_loss
+            nf_score = torch.autograd.grad(
+                outputs=log_likelihood.sum(),
+                inputs=x_gen_detached,
+                create_graph=True,     # For the reg_loss
+                retain_graph=True,     # For the reg_loss
+            )[0]
+        nf_score = nf_score.reshape(args.batch_size, gen_per_label, -1) # (B, N_gen, ...)
+
+        
+        x_gen = x_gen.reshape(args.batch_size, gen_per_label, -1)       # (B, N_gen, ...)
+        # z = z.reshape(args.batch_size, gen_per_label, -1)               # (B, N_gen, ...)
+        
+        # z_for_loss = z.reshape(args.batch_size, gen_per_label, -1).detach().clone()
+        # nf_score_for_loss = nf_score.detach().clone()
+                
         optimizer.zero_grad()
-        curr_loss = drift_loss_model(generated_samples, pos_samples, neg_samples)   # (B, )
+        # curr_loss = nf_drift_loss_model(z, pos_samples, nf_score)   # (B, )
+        curr_loss = nf_drift_loss_model(x_gen, pos_samples, nf_score, vp_vq_ratio=args.vp_vq_ratio)   # (B, )
         curr_loss = curr_loss.mean()
         scaler.scale(curr_loss).backward()
         scaler.unscale_(optimizer)
-        grad_norm = clip_grad_norm_(model.parameters(), max_norm=2.0)
+        grad_norm = clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         
@@ -306,9 +332,12 @@ if __name__ == '__main__':
                 'min_train_loss' : min_train_loss,
             }
             torch.save(checkpoint, os.path.join(weights_dir, f"model_best.pth"))            
-            
+        
+        draw_flag = False
+        if curr_loss < min_train_loss:
+            draw_flag = True
         min_train_loss = min(min_train_loss, curr_loss)
-        del pos_samples, neg_samples
+        # del pos_samples
         
         # Evaluate performance
         if (epoch + 1) % args.sample_freq == 0:
@@ -316,7 +345,7 @@ if __name__ == '__main__':
             noise_eval = fixed_noise_eval.clone().to(device)
             with torch.no_grad():
                 with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    generated_samples_eval = model(noise_eval)
+                    gen_samples_eval = model.reverse(noise_eval, y=None).detach()
 
             # fid_score = fid.compute().item()
             # fid.reset()
@@ -330,10 +359,42 @@ if __name__ == '__main__':
                 }
                 torch.save(checkpoint, os.path.join(weights_dir, f"epoch_{epoch+1}-loss_{min_train_loss:.2f}.pth"))
             
-            generated_samples_eval = generated_samples_eval.unsqueeze(-1)
-            generated_samples_eval = generated_samples_eval.float().cpu().numpy()
-            save_2d_dataset_image(generated_samples_eval, args.img_size, results_dir, f"inference-epoch_{epoch+1}")
-        
+            gen_samples_eval = gen_samples_eval.reshape(args.batch_size, -1).unsqueeze(1)    # (B, 1, S) where C_gen=1
+
+            v_p, _ = nf_drift_loss_model._calculate_positive_force(
+                gen_samples_eval, pos_samples, 1e-6, nf_drift_loss_model.temperature_list
+            )
+            v_p_np = v_p.reshape(args.batch_size, -1).detach().cpu().numpy()
+            
+            gen_samples_clone = gen_samples_eval.clone().reshape(args.batch_size, num_patches, num_classes).requires_grad_(True)
+            z_q, _, log_dets_q = model(gen_samples_clone, y=None)
+            nf_loss_q = 0.5 * z_q.pow(2).mean(dim=(-1, -2)) - log_dets_q    # (B*N_gen, )
+            log_likelihood_q = -nf_loss_q
+            nf_score_q = torch.autograd.grad(
+                outputs=log_likelihood_q.sum(),
+                inputs=gen_samples_clone,
+                create_graph=False,
+                retain_graph=False,
+            )[0]
+            nf_score_q = nf_score_q.reshape(args.batch_size, -1) # C_gen=1
+            v_q_np = nf_score_q.detach().cpu().numpy()
+            
+            ratio_total = args.vp_vq_ratio + 1.0
+            weight_p = 2.0 * (args.vp_vq_ratio / ratio_total)
+            weight_q = 2.0 * (1.0 / ratio_total)
+            v_p_np = v_p_np * weight_p
+            v_q_np = v_q_np * weight_q            
+            
+            pos_samples_np = pos_samples.view(args.batch_size * pos_per_sample, -1)
+            pos_samples_np = pos_samples_np.unsqueeze(-1).float().cpu().numpy()
+            gen_samples_np = gen_samples_eval.squeeze(1).unsqueeze(-1)
+            gen_samples_np = gen_samples_np.float().cpu().numpy()
+            # save_2d_dataset_image(generated_samples_eval, args.img_size, results_dir, f"inference-epoch_{epoch+1}")
+            
+            save_2d_arrow_diagram(pos_samples_np, gen_samples_np, v_p_np, v_q_np, epoch, results_dir, f"inference-epoch_{epoch+1}")            
+            
+            
+            
     
     if not args.dry_run:
         wandb.finish()
