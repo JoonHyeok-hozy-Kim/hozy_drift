@@ -3,6 +3,7 @@
 logs/
 results/
 scripts/a100_gpu/
+scripts/etc/
 venv/
 weights/train_weights_wip/
 wandb_logs/

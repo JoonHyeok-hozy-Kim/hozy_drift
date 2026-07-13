@@ -70,12 +70,12 @@ attn_temp=1.0
 ffn_expansion=4
 # cfg_weight=0.0
 
-init_vp_vq_ratio=0.5
-reg_lambda=0.01
+init_vp_vq_ratio=1.0
+reg_lambda=0.05
 
-batch_size=1024
-epochs=30000
-lr=1e-4
+batch_size=2048
+epochs=50000
+lr=3e-5
 
 lr_schedule_type=ws
 # lr_schedule_type=s
@@ -84,7 +84,7 @@ sample_freq=100
 # num_samples=3000
 
 resume_wandb_url=false
-# resume_wandb_url=https://wandb.ai/hozy-university-of-pennsylvania/DriftingNF-drifting_tarflow_two_dimensional_ratio_reg_loss-spiral/runs/jc0iieav/overview?nw=nwuserdanielisdan
+# resume_wandb_url=https://wandb.ai/hozy-university-of-pennsylvania/DriftingNF-drifting_tarflow_two_dimensional_learnable_ratio_reg-spiral/runs/c1k2lx2y/logs?nw=nwuserdanielisdan
 
 # annealed_guidance_flag=""
 
