@@ -8,7 +8,7 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split(r'(\d+)', s)]
 
-def create_gif(input_dir, output_filename, duration=200):
+def create_gif(input_dir, output_filename, duration=200, scale=0.3):
     valid_extensions = ('*.png', '*.jpg', '*.jpeg')
     image_paths = []
     for ext in valid_extensions:
@@ -29,6 +29,15 @@ def create_gif(input_dir, output_filename, duration=200):
     frames = []
     for path in image_paths:
         img = Image.open(path).convert('RGB')
+        if scale != 0.1:
+            ww = int(img.width * scale)
+            hh = int(img.height * scale)
+            try:
+                resample_method = Image.Resampling.LANCZOS
+            except AttributeError:
+                resample_method = Image.LANCZOS
+            img = img.resize((ww, hh), resample_method)
+            
         frames.append(img)
         
     frames[0].save(
