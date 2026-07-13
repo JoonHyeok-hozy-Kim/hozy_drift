@@ -1,7 +1,7 @@
 .vscode/
 .env
 logs/
-results/
+results/train/
 scripts/a100_gpu/
 scripts/etc/
 venv/
