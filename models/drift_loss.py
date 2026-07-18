@@ -74,14 +74,11 @@ class DriftLossFunction(nn.Module):
             softmax_x = torch.softmax(logits, dim=-2)        # Softmax over x (gen_samples). (B, C_gen, C_gen+C_neg+C_pos)
             kernel_all = torch.sqrt(torch.clip(softmax_y * softmax_x, min=eps))  # harm.avg. (B, C_gen, C_gen+C_neg+C_pos)
             
-            # kernel_all = \sum_{y+}\sum_{y-}[(k(x,y+)/Z_pos) * (k(x,y-)/Z_neg) * (y+ - y-)]
+            # kernel_all = \sum_{y+}\sum_{y-}[k(x,y+) * k(x,y-) * (y+ - y-)] / (Z_pos*Z_neg)
+            #            = \sum_{y+}\sum_{y-}[(k(x,y+)/Z_pos) * (k(x,y-)/Z_neg) * (y+ - y-)]
             #            = \sum_{y+}\sum_{y-}[(k(x,y+)/Z_pos)*(k(x,y-)/Z_neg)*(y+)] - \sum_{y+}\sum_{y-}[ (k(x,y+)/Z_pos)*(k(x,y-)/Z_neg)*(y-)]
             #            = \sum_{y+}[(k(x,y+)/Z_pos)*(y+) * \sum_{y-}[(k(x,y-)/Z_neg)]] - \sum_{y-}[(k(x,y-)/Z_neg)*(y-) * \sum_{y+}[(k(x,y+)/Z_pos)]]
             #            = \sum_{y+}[(k(x,y+)/Z_pos)*(y+)] - \sum_{y-}[(k(x,y-)/Z_neg)*(y-)]    (Because \sum_{y}[(k(x,y)/Z_pos)] = 1)
-            
-            # kernel_all = \sum_{y+}\sum_{y-}[k(x,y+) * k(x,y-) * (y+ - y-)] / (Z_pos*Z_neg)
-            #            = \sum_{y+}\sum_{y-}[(k(x,y+)/Z_pos)*(k(x,y-)/Z_neg)*(y+)] - \sum_{y+}\sum_{y-}[(k(x,y+)/Z_pos)*(k(x,y-)/Z_neg)*(y-)]
-            #            = \sum_{y+}[(k(x,y+)/Z_pos)*(y+)] - \sum_{y-}[(k(x,y-)/Z_neg)*(y-)]    (Because 1 = \sum_{y+}[(k(x,y+)/Z_pos)] = \sum_{y-}[(k(x,y-)/Z_neg)])
             
             pos_start_idx = C_gen + C_neg
             kernel_neg = kernel_all[:, :, :pos_start_idx]   # k(x,y-) : (B, C_gen, C_gen+C_neg)
@@ -152,16 +149,29 @@ class NFDriftLossFunction_Ratio(DriftLossFunction):
         for curr_tau in temperature_list:
             logits = -dist_normalized / curr_tau    # (B, C_gen, C_gen+C_neg+C_pos)            
             softmax_y = torch.softmax(logits, dim=-1)        # Softmax over y (tgt_samples). (B, C_gen, C_pos)
-            softmax_x = torch.softmax(logits, dim=-2)        # Softmax over x (gen_samples). (B, C_gen, C_pos)
-            kernel_pos = torch.sqrt(torch.clip(softmax_y * softmax_x, min=eps))  # harm.avg. (B, C_gen, C_pos)
+            # softmax_x = torch.softmax(logits, dim=-2)        # Softmax over x (gen_samples). (B, C_gen, C_pos)
+            # kernel_pos = torch.sqrt(torch.clip(softmax_y * softmax_x, min=eps))  # harm.avg. (B, C_gen, C_pos)
+            
+            # Exp. 3) Exp.1 + Exp.2
+            kernel_pos = softmax_y
                 
             # [Derivation]
             # V_p = \sum_{y+}[ k(x,y+) * (y+ - x) ] / Z_pos
             #     = \sum_{y+}[ k(x,y+)/Z_pos * y+]  - x     (Because 1 = \sum_{y+}[(k(x,y+)/Z_pos)])
             #     = kernel_pos * pos_samples_scaled - fixed_gen_samples_scaled
-            kernel_pos_y = torch.einsum("bcC,bCs->bcs", kernel_pos, pos_samples_scaled)     # (B, C_gen, S)
-            curr_force = kernel_pos_y - fixed_gen_samples_scaled                            # (B, C_gen, S)
-                
+            
+            # Exp. 1) Excluding softmax_x
+            # kernel_pos_y = torch.einsum("bcC,bCs->bcs", kernel_pos, pos_samples_scaled)     # (B, C_gen, S)
+            # kernel_pos_y = torch.einsum("bcC,bCs->bcs", softmax_y, pos_samples_scaled)     # (B, C_gen, S)
+            
+            # Exp. 2) Multiply by sum_coeffs
+            # curr_force = kernel_pos_y - fixed_gen_samples_scaled                            # (B, C_gen, S)
+            Z_pos = torch.sum(kernel_pos, dim=-1, keepdim=True)                             # (B, C_gen, 1)
+            coeff_pos = kernel_pos * Z_pos                                                  # (B, C_gen, C_pos)
+            sum_coeffs = torch.sum(kernel_pos, dim=-1, keepdim=True)                        # (B, C_gen, 1)
+            curr_force = torch.einsum("bcC,bCs->bcs", coeff_pos, pos_samples_scaled)        # (B, C_gen, S)
+            curr_force = curr_force - sum_coeffs * fixed_gen_samples_scaled                 # (B, C_gen, S)
+            
             scale_curr_force = torch.sqrt(torch.clip(torch.mean(curr_force ** 2), min=eps))
             curr_force = curr_force / scale_curr_force
             accumulated_force = accumulated_force + curr_force

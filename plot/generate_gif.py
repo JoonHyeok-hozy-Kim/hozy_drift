@@ -57,8 +57,12 @@ if __name__ == '__main__':
     
     output_dir = "results"
     output_dir = os.path.join(output_dir, "plot")
+    
     curr_file_name = os.path.basename(__file__).split('.')[0]
     output_dir = os.path.join(output_dir, curr_file_name)
+    
+    script_dir = args.dir.split('/')[-4]
+    output_dir = os.path.join(output_dir, script_dir)
     os.makedirs(output_dir, exist_ok=True)
     
     target_name = args.dir.split('/')[-2]

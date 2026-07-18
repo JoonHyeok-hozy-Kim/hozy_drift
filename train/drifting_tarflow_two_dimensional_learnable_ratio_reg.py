@@ -79,8 +79,8 @@ if __name__ == '__main__':
     
     settings_str = ""
     settings_str += f"init_vp_vq_ratio_{args.init_vp_vq_ratio}-reg_lambda_{args.reg_lambda}"
-    # settings_str += f"-n_flowblck_{args.num_flow_blocks}-n_attnblck_{args.num_attn_blocks}"
-    # settings_str += f"-n_attnheads_{args.attn_num_heads}-attnhead_dim_{args.attn_head_dim}"
+    settings_str += f"-n_flowblck_{args.num_flow_blocks}-n_attnblck_{args.num_attn_blocks}"
+    settings_str += f"-n_attnheads_{args.attn_num_heads}-attnhead_dim_{args.attn_head_dim}"
     settings_str += f"-lr_{args.lr}-batch_sz_{args.batch_size}"
         
     wandb_exp_name = f"DriftingNF-{file_name}-{args.dataset_name}"

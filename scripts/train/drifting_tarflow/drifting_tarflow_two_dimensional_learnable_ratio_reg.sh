@@ -6,7 +6,7 @@
 #SBATCH --qos=gu-med
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
 #SBATCH --time=4-00:00:00
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
@@ -61,23 +61,23 @@ channel_size=1
 num_flow_blocks=4
 num_attn_blocks=4
 
-flow_block_dim=16
-attn_num_heads=4
-attn_head_dim=4
+flow_block_dim=8
+attn_num_heads=8
+attn_head_dim=64
 
 permutation_type=flip
 attn_temp=1.0
 ffn_expansion=4
 # cfg_weight=0.0
 
-init_vp_vq_ratio=1.0
+init_vp_vq_ratio=0.1
 reg_lambda=0.05
 
 batch_size=2048
 epochs=50000
 lr=3e-5
 
-lr_schedule_type=ws
+lr_schedule_type=wsd
 # lr_schedule_type=s
 
 sample_freq=100
